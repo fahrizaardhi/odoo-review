@@ -1,0 +1,41 @@
+name: Odoo Review
+
+on:
+  pull_request:
+    paths:
+      - '**.py'
+      - '**/__manifest__.py'
+
+jobs:
+  odoo-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install odoo-review
+        run: pip install odoo-review
+
+      - name: Run odoo-review
+        run: |
+          odoo-review . --all \
+            --format json \
+            --output odoo-review-report.json \
+            --fail-on HIGH
+
+      - name: Upload review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: odoo-review-report
+          path: odoo-review-report.json
+          retention-days: 30
+
+      - name: Print console summary
+        if: always()
+        run: odoo-review . --all --no-bandit

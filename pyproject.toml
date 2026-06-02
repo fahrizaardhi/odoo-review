@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odoo-review"
+version = "0.1.0"
+description = "Static analysis tool for Odoo addons: SQL injection, N+1 queries, ORM anti-patterns, manifest dependencies, and more."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "odoo-review contributors" }]
+keywords = ["odoo", "static-analysis", "linter", "security", "orm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Quality Assurance",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "bandit>=1.7",
+]
+
+[project.urls]
+Homepage = "https://github.com/fahrizaardhi/odoo-review"
+Repository = "https://github.com/fahrizaardhi/odoo-review"
+Issues = "https://github.com/fahrizaardhi/odoo-review/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+]
+
+[project.scripts]
+odoo-review = "odoo_review.cli:cli_entry"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["odoo_review*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
