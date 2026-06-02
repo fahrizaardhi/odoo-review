@@ -1,13 +1,35 @@
-name: Odoo Review
+name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - '**.py'
-      - '**/__manifest__.py'
 
 jobs:
-  odoo-review:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.8', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install package (from source) + dev deps
+        run: pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -q
+
+  self-review:
+    name: Self-review demo
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,18 +37,21 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: 'pip'
 
-      - name: Install odoo-review
-        run: pip install odoo-review
+      - name: Install package (from source)
+        run: pip install -e .
 
-      - name: Run odoo-review
+      # Runs the packaged CLI against the bundled sample addon to prove the tool
+      # works end-to-end. The fixture is *intentionally* insecure, so this step
+      # only produces a report artifact — it must NOT gate the build (no --fail-on).
+      - name: Run odoo-review on the sample fixture
         run: |
-          odoo-review . --all \
+          odoo-review tests/fixtures/sample_addon \
             --format json \
-            --output odoo-review-report.json \
-            --fail-on HIGH
+            --output odoo-review-report.json
+          odoo-review tests/fixtures/sample_addon --no-bandit --no-color
 
       - name: Upload review report
         if: always()
@@ -35,7 +60,3 @@ jobs:
           name: odoo-review-report
           path: odoo-review-report.json
           retention-days: 30
-
-      - name: Print console summary
-        if: always()
-        run: odoo-review . --all --no-bandit

@@ -1,6 +1,7 @@
 """
 Tests for odoo-review checkers.
 """
+from __future__ import annotations  # keep `set[str]` etc. valid on Python 3.8
 import ast
 from pathlib import Path
 import pytest
