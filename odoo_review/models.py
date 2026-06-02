@@ -22,6 +22,7 @@ class Category(str, Enum):
     MAINTAINABILITY = "Maintainability"
     DEPENDENCY    = "Dependency"
     BEST_PRACTICE = "Best Practice"
+    VIEW          = "XML/View"
 
 
 SEVERITY_ORDER = {

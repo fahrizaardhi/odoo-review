@@ -18,6 +18,7 @@ from odoo_review.checkers.orm_best_practice import ORMBestPracticeChecker
 from odoo_review.checkers.deprecation import DeprecationChecker
 from odoo_review.checkers.manifest import check_manifest, detect_odoo_version
 from odoo_review.checkers.access import check_access_rules
+from odoo_review.checkers.xml_view import check_xml, iter_xml_files
 from odoo_review.suppressions import is_suppressed, parse_inline_suppressions
 
 # Entry-point group third-party packages register custom checkers under.
@@ -167,6 +168,13 @@ def scan_addon(
 
     # 3. Addon-level security check: models without an ir.model.access rule.
     for finding in check_access_rules(addon_path):
+        result.add(finding)
+
+    # 3b. XML / view-layer checks (deprecated attrs, t-raw XSS, duplicate ids,
+    # broken actions, malformed files). Honours the same exclude globs.
+    xml_files = iter_xml_files(addon_path, cfg.exclude)
+    result.scanned_files += len(xml_files)
+    for finding in check_xml(xml_files, context):
         result.add(finding)
 
     # 4. Bandit scan (whole addon at once), excluding the same dirs.

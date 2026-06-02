@@ -1,14 +1,21 @@
 # odoo-review
 
-Static analysis tool for Odoo addons. Combines **Bandit** security scanning with **Odoo-specific AST checks** for SQL injection, N+1 queries, ORM anti-patterns, manifest dependency issues, and more.
+Static analysis tool for Odoo addons. Combines **Bandit** security scanning with **Odoo-specific AST checks** for SQL injection, N+1 queries, ORM anti-patterns, manifest dependency issues, **XML/view-layer problems**, and more.
 
 ## Installation
 
 ```bash
 pip install odoo-review
+# with precise line numbers for XML findings (recommended):
+pip install "odoo-review[xml]"
 # or from source:
 pip install -e .
 ```
+
+> **XML line numbers:** the XML/view checks (OR070–OR079) run with or without
+> [`lxml`](https://lxml.de/), but `lxml` is needed to report the exact line of a
+> finding (it is already standard in any Odoo environment). Without it the checks
+> still fire, reporting line 0.
 
 ## Usage
 
@@ -179,9 +186,24 @@ supported, MEDIUM when the version is unknown.
 | OR062 | scaled   | legacy API: `from openerp`, `osv.osv`, `_columns`, `fields.function` |
 | OR063 | scaled   | `self.pool` / `self.pool.get()` — old API, use `self.env` |
 
+### XML / View layer
+Every `*.xml` file is parsed (views, QWeb templates, data, actions). The
+deprecation rules are version-aware; `attrs`/`states`/`<tree>` are only flagged
+on the versions where they actually changed, so older code stays quiet.
+
+| Rule  | Severity | Description |
+|-------|----------|-------------|
+| OR070 | scaled   | `attrs="..."` attribute — deprecated in Odoo 17, removed in 18 (HIGH on v18+, INFO on v17) |
+| OR071 | scaled   | `states="..."` attribute — same deprecation path as OR070 |
+| OR072 | INFO     | `<tree>` renamed to `<list>` in Odoo 17 |
+| OR073 | MEDIUM/HIGH | `t-raw` QWeb directive — unescaped HTML / XSS; removed in 17 (use `t-out`) |
+| OR074 | HIGH     | duplicate XML record `id` within the addon — the second one overwrites the first |
+| OR075 | HIGH     | `ir.actions.act_window` record / `<act_window/>` with no `res_model` |
+| OR079 | HIGH     | malformed XML — Odoo would refuse to load it |
+
 > **Scan scope:** `__pycache__`, `.git`, `node_modules`, `static`, `migrations`, and `tests`
-> directories are skipped by both the AST checks and Bandit. Test code intentionally
-> contains anti-patterns, so scanning it only adds noise.
+> directories are skipped by the AST checks, the XML checks, and Bandit. Test code
+> intentionally contains anti-patterns, so scanning it only adds noise.
 
 ### Bandit (via integration)
 All Bandit rules run automatically unless `--no-bandit` is passed.

@@ -610,6 +610,127 @@ class TestConfig:
         assert not any(f.rule_id == "OR026" for f in result.findings)
 
 
+# ── OR070-079: XML / view-layer ─────────────────────────────────────────────────
+
+def _xml(tmp_path, files: dict, version=None):
+    """Write {relative_name: content} XML files and run check_xml over them."""
+    from odoo_review.checkers.xml_view import check_xml, iter_xml_files
+    from odoo_review.models import ScanContext
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        target = tmp_path / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    ctx = ScanContext(odoo_version=version)
+    return list(check_xml(iter_xml_files(tmp_path), ctx))
+
+
+class TestXmlViewChecker:
+    def test_attrs_high_on_v18(self, tmp_path):
+        xml = "<odoo><record id='v' model='ir.ui.view'><field name='arch' type='xml'>" \
+              "<field name='x' attrs=\"{'invisible': [('y','=',1)]}\"/></field></record></odoo>"
+        f = [x for x in _xml(tmp_path, {"views/v.xml": xml}, version=18) if x.rule_id == "OR070"]
+        assert f and f[0].severity.value == "HIGH"
+
+    def test_attrs_info_on_v17(self, tmp_path):
+        xml = "<odoo><field name='x' attrs=\"{'invisible': [('y','=',1)]}\"/></odoo>"
+        f = [x for x in _xml(tmp_path, {"v.xml": xml}, version=17) if x.rule_id == "OR070"]
+        assert f and f[0].severity.value == "INFO"
+
+    def test_attrs_not_flagged_pre_v17_or_unknown(self, tmp_path):
+        xml = "<odoo><field name='x' attrs=\"{'invisible': [('y','=',1)]}\"/></odoo>"
+        assert not [x for x in _xml(tmp_path, {"v.xml": xml}, version=16) if x.rule_id == "OR070"]
+        assert not [x for x in _xml(tmp_path, {"v.xml": xml}, version=None) if x.rule_id == "OR070"]
+
+    def test_states_attribute(self, tmp_path):
+        xml = "<odoo><button name='go' states='draft,done'/></odoo>"
+        assert any(x.rule_id == "OR071" for x in _xml(tmp_path, {"v.xml": xml}, version=18))
+
+    def test_tree_renamed_on_v17(self, tmp_path):
+        xml = "<odoo><tree><field name='name'/></tree></odoo>"
+        assert any(x.rule_id == "OR072" for x in _xml(tmp_path, {"v.xml": xml}, version=17))
+        assert not [x for x in _xml(tmp_path, {"v.xml": xml}, version=16) if x.rule_id == "OR072"]
+
+    def test_t_raw_xss_always_flagged(self, tmp_path):
+        xml = "<templates><t t-name='x'><span t-raw='record.body'/></t></templates>"
+        # Security finding fires regardless of version; HIGH once removed in v17+.
+        un = [x for x in _xml(tmp_path, {"v.xml": xml}, version=None) if x.rule_id == "OR073"]
+        hi = [x for x in _xml(tmp_path, {"v.xml": xml}, version=17) if x.rule_id == "OR073"]
+        assert un and un[0].severity.value == "MEDIUM"
+        assert hi and hi[0].severity.value == "HIGH"
+        assert hi[0].category.value == "Security"
+
+    def test_duplicate_id_across_files(self, tmp_path):
+        a = "<odoo><record id='my_view' model='ir.ui.view'/></odoo>"
+        b = "<odoo><record id='my_view' model='ir.ui.view'/></odoo>"
+        dups = [x for x in _xml(tmp_path, {"views/a.xml": a, "views/b.xml": b}) if x.rule_id == "OR074"]
+        assert len(dups) == 1  # only the second occurrence is reported
+
+    def test_unique_ids_clean(self, tmp_path):
+        xml = "<odoo><record id='a' model='ir.ui.view'/><record id='b' model='ir.ui.view'/></odoo>"
+        assert not [x for x in _xml(tmp_path, {"v.xml": xml}) if x.rule_id == "OR074"]
+
+    def test_act_window_without_res_model(self, tmp_path):
+        xml = "<odoo><record id='act' model='ir.actions.act_window'>" \
+              "<field name='name'>X</field></record></odoo>"
+        assert any(x.rule_id == "OR075" for x in _xml(tmp_path, {"v.xml": xml}))
+
+    def test_act_window_with_res_model_clean(self, tmp_path):
+        xml = "<odoo><record id='act' model='ir.actions.act_window'>" \
+              "<field name='res_model'>res.partner</field></record></odoo>"
+        assert not [x for x in _xml(tmp_path, {"v.xml": xml}) if x.rule_id == "OR075"]
+
+    def test_malformed_xml_reports_or079(self, tmp_path):
+        assert any(x.rule_id == "OR079" for x in _xml(tmp_path, {"bad.xml": "<odoo><record></odoo>"}))
+
+    def test_static_dir_is_skipped(self, tmp_path):
+        xml = "<templates><t t-name='x'><span t-raw='v'/></t></templates>"
+        assert not _xml(tmp_path, {"static/src/xml/tmpl.xml": xml}, version=17)
+
+
+class TestXmlScanIntegration:
+    def test_scan_addon_runs_xml_checks(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'm', 'version': '18.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        (tmp_path / "views").mkdir()
+        (tmp_path / "views" / "v.xml").write_text(
+            "<odoo><field name='x' attrs=\"{'invisible': [('y','=',1)]}\"/></odoo>",
+            encoding="utf-8",
+        )
+        result = scan_addon(tmp_path, run_bandit_scan=False)
+        assert any(f.rule_id == "OR070" for f in result.findings)
+
+    def test_xml_finding_respects_disable_config(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'm', 'version': '18.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        (tmp_path / "v.xml").write_text(
+            "<odoo><field name='x' attrs=\"{'invisible': []}\"/></odoo>", encoding="utf-8"
+        )
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\ndisable = OR070\n", encoding="utf-8")
+        result = scan_addon(tmp_path, run_bandit_scan=False)
+        assert not any(f.rule_id == "OR070" for f in result.findings)
+
+    def test_xml_exclude_glob(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'm', 'version': '18.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        (tmp_path / "legacy").mkdir()
+        (tmp_path / "legacy" / "old.xml").write_text(
+            "<odoo><field name='x' attrs=\"{'invisible': []}\"/></odoo>", encoding="utf-8"
+        )
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\nexclude = legacy/*\n", encoding="utf-8")
+        result = scan_addon(tmp_path, run_bandit_scan=False)
+        assert not any(f.rule_id == "OR070" for f in result.findings)
+
+
 # ── CLI path resolution ─────────────────────────────────────────────────────────
 
 class TestCliResolution:

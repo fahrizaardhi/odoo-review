@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odoo-review"
-version = "0.2.0"
+version = "0.3.0"
 description = "Static analysis tool for Odoo addons: SQL injection, N+1 queries, ORM anti-patterns, manifest dependencies, and more."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -34,9 +34,16 @@ Repository = "https://github.com/fahrizaardhi/odoo-review"
 Issues = "https://github.com/fahrizaardhi/odoo-review/issues"
 
 [project.optional-dependencies]
+# lxml gives precise line numbers for XML/view findings (OR070–OR079). It is
+# already standard in any Odoo environment; without it the checks still run but
+# report line 0. Install with `pip install odoo-review[xml]`.
+xml = [
+    "lxml",
+]
 dev = [
     "pytest>=7",
     "pytest-cov",
+    "lxml",
 ]
 
 [project.scripts]

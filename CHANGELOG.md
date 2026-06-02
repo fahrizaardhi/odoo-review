@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.3.0]
+
+### Added
+- **XML / view-layer checks** — a new addon-level pass parses every `*.xml`
+  file (the previous releases scanned only Python):
+  - **OR070** — `attrs="..."` attribute (deprecated in Odoo 17, removed in 18).
+    Version-aware: `HIGH` on v18+, `INFO` on v17, not flagged on older/unknown.
+  - **OR071** — `states="..."` attribute (same deprecation path as OR070).
+  - **OR072** — `<tree>` element renamed to `<list>` in Odoo 17 (v17+, `INFO`).
+  - **OR073** — `t-raw` QWeb directive — unescaped HTML / XSS risk; also removed
+    in Odoo 17 in favour of `t-out`. Flagged on every version (`MEDIUM`, `HIGH`
+    on v17+).
+  - **OR074** — duplicate XML record `id` within the same addon (the second
+    definition silently overwrites the first).
+  - **OR075** — `ir.actions.act_window` record (or `<act_window/>` shorthand)
+    with no `res_model` — a broken action.
+  - **OR079** — malformed XML that Odoo would refuse to load.
+- New `XML/View` finding category.
+- Optional `lxml` dependency (`pip install odoo-review[xml]`) for precise line
+  numbers in XML findings; without it the checks still run, reporting line 0.
+
 ## [0.2.0]
 
 ### Added

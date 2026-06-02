@@ -46,7 +46,7 @@ def print_result(result: ScanResult, use_color: bool = True, verbose: bool = Fal
     print(f"\n{'='*70}", file=out)
     print(_bold(f"  📦 Addon: {addon_name}", use_color), file=out)
     print(f"  Path   : {result.addon_path}", file=out)
-    print(f"  Files  : {result.scanned_files} Python file(s) scanned", file=out)
+    print(f"  Files  : {result.scanned_files} file(s) scanned (Python + XML)", file=out)
     if result.odoo_version is not None:
         print(f"  Odoo   : v{result.odoo_version} (from {result.odoo_version_source})", file=out)
     if result.suppressed:
