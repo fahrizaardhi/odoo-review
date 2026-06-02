@@ -1,23 +1,18 @@
 """
-Finding suppression: inline `# noqa` comments and `.odoo-review` config files.
+Inline finding suppression via trailing `# noqa` comments:
 
-Two independent layers, both applied as a post-filter over the collected
-findings so they cover Bandit results as well as the AST checkers:
+    something()            # noqa             (all rules on this line)
+    cr.execute(q)          # noqa: OR001      (only OR001)
+    cr.execute(q)          # noqa: OR001,B608 (several rules)
 
-* Inline   — a trailing comment on the offending line:
-                 something()            # noqa            (all rules on this line)
-                 cr.execute(q)          # noqa: OR001     (only OR001)
-                 cr.execute(q)          # noqa: OR001,B608 (several rules)
-* Config   — a `.odoo-review` INI file discovered by walking up from the addon:
-                 [odoo-review]
-                 disable = OR025, OR044
+Applied as a post-filter over collected findings, so it covers Bandit results
+as well as the AST checkers. Project-wide rule disabling lives in
+`odoo_review.config` (the `.odoo-review` / pyproject config file).
 """
 from __future__ import annotations
-import configparser
 import io
 import re
 import tokenize
-from pathlib import Path
 from typing import Dict, Optional, Set
 
 # A trailing `# noqa` with an optional `: id, id` list. We only read the id
@@ -28,8 +23,6 @@ _RULE_TOKEN = re.compile(r"^[A-Z]+\d+$")
 
 # Sentinel: this line suppresses *all* rules (a bare `# noqa`).
 ALL = None
-
-_CONFIG_FILENAME = ".odoo-review"
 
 
 def _rule_ids(raw: str) -> Set[str]:
@@ -71,30 +64,6 @@ def parse_inline_suppressions(source: str) -> Dict[int, Optional[Set[str]]]:
         # inline suppressions rather than failing the whole scan.
         pass
     return result
-
-
-def _parse_config(path: Path) -> Set[str]:
-    """Read disabled rule ids from a `.odoo-review` INI file."""
-    parser = configparser.ConfigParser()
-    try:
-        parser.read(path, encoding="utf-8")
-    except (configparser.Error, OSError):
-        return set()
-    if not parser.has_section("odoo-review"):
-        return set()
-    raw = parser.get("odoo-review", "disable", fallback="")
-    return _rule_ids(raw)
-
-
-def load_config_disabled(start: Path) -> Set[str]:
-    """Discover the nearest `.odoo-review` by walking up from *start* (an addon
-    directory) and return the rule ids it disables. Empty set if none found."""
-    base = start if start.is_dir() else start.parent
-    for directory in (base, *base.parents):
-        candidate = directory / _CONFIG_FILENAME
-        if candidate.is_file():
-            return _parse_config(candidate)
-    return set()
 
 
 def is_suppressed(

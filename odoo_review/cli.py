@@ -34,7 +34,12 @@ Examples:
   odoo-review ./my_addon --fail-on HIGH
         """,
     )
-    p.add_argument("path", help="Path to an addon directory or (with --all) a directory containing multiple addons")
+    p.add_argument(
+        "paths",
+        nargs="+",
+        help="Addon dir(s), a dir of addons (with --all), or individual files "
+             "(each file is mapped to its containing addon — handy for pre-commit).",
+    )
     p.add_argument("--all",       action="store_true", help="Scan all addons found recursively under PATH")
     p.add_argument("--no-bandit", action="store_true", help="Skip Bandit security scan")
     p.add_argument("--format",    choices=["console", "json"], default="console", help="Output format (default: console)")
@@ -59,26 +64,60 @@ Examples:
     return p
 
 
+def _find_addon_root(path: Path) -> Optional[Path]:
+    """Walk up from a file to the nearest directory containing __manifest__.py."""
+    for d in (path.parent, *path.parent.parents):
+        if (d / "__manifest__.py").is_file():
+            return d
+    return None
+
+
 def main() -> int:
     parser = build_parser()
     args   = parser.parse_args()
 
-    target = Path(args.path).resolve()
-    if not target.exists():
-        print(f"❌  Path not found: {target}", file=sys.stderr)
-        return 2
-
     run_bandit = not args.no_bandit
     use_color  = not args.no_color and sys.stdout.isatty()
 
-    # Scan
-    if args.all or not (target / "__manifest__.py").exists():
-        results = scan_directory(target, run_bandit_scan=run_bandit, odoo_version=args.odoo_version)
-        if not results:
-            print(f"⚠️  No Odoo addons found under {target}", file=sys.stderr)
-            return 0
-    else:
-        results = [scan_addon(target, run_bandit_scan=run_bandit, odoo_version=args.odoo_version)]
+    # Resolve every input path into addons to scan. Files map to their addon;
+    # directories are scanned directly (or recursively with --all / when they
+    # are not themselves an addon). Addon roots are de-duplicated.
+    dir_results = []
+    addon_targets: list[Path] = []
+    seen: set[Path] = set()
+    missing = False
+
+    def queue_addon(p: Path) -> None:
+        if p not in seen:
+            seen.add(p)
+            addon_targets.append(p)
+
+    for raw in args.paths:
+        target = Path(raw).resolve()
+        if not target.exists():
+            print(f"❌  Path not found: {target}", file=sys.stderr)
+            missing = True
+            continue
+        if target.is_file():
+            root = _find_addon_root(target)
+            if root is not None:
+                queue_addon(root)
+            # A file outside any addon is silently ignored (e.g. repo-level files).
+        elif args.all or not (target / "__manifest__.py").exists():
+            dir_results.extend(scan_directory(target, run_bandit_scan=run_bandit, odoo_version=args.odoo_version))
+        else:
+            queue_addon(target)
+
+    results = dir_results + [
+        scan_addon(a, run_bandit_scan=run_bandit, odoo_version=args.odoo_version)
+        for a in addon_targets
+    ]
+
+    if not results:
+        if missing:
+            return 2
+        print("⚠️  No Odoo addons found in the given path(s)", file=sys.stderr)
+        return 0
 
     # Output
     if args.format == "json":

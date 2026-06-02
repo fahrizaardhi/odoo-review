@@ -76,11 +76,43 @@ each addon, like Bandit's `.bandit`):
 
 ```ini
 [odoo-review]
-disable = OR025, OR044
+target-version = 17                     ; sets the Odoo series (overrides manifest auto-detect)
+disable  = OR025, OR044                 ; never report these rules
+select   = OR001, OR002, OR026          ; if set, report ONLY these rules
+severity = OR021:INFO, OR010:CRITICAL   ; remap a rule's severity
+exclude  = legacy/*, scratch/*          ; glob paths to skip (relative to addon)
+```
+
+The same keys are also accepted in `pyproject.toml` (needs a TOML reader —
+stdlib `tomllib` on Python 3.11+, or the `tomli` backport):
+
+```toml
+[tool.odoo-review]
+target-version = 17
+disable  = ["OR025", "OR044"]
+severity = { OR021 = "INFO" }
+exclude  = ["legacy/*"]
 ```
 
 A `Muted: N finding(s) suppressed …` line in the report (and a `suppressed`
 field in JSON output) shows how many findings were filtered.
+
+## Use as a pre-commit hook
+
+In any Odoo addon repo, add to `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/fahrizaardhi/odoo-review
+    rev: v0.2.0
+    hooks:
+      - id: odoo-review
+        # optional: args: [--no-bandit, --fail-on, MEDIUM]
+```
+
+Then `pre-commit install`. On each commit, the changed `.py`/`.csv` files are
+mapped to their addon and scanned; HIGH/CRITICAL findings block the commit
+(tune via `args`).
 
 ## GitHub Actions Integration
 
@@ -107,6 +139,7 @@ field in JSON output) shows how many findings were filtered.
 | OR020 | HIGH     | `sudo(True)` forces superuser context (legacy API) |
 | OR021 | LOW      | bare `sudo()` escalates privileges — confirm it is justified |
 | OR026 | CRITICAL | `eval()` / `exec()` / `compile()` builtin usage — use `safe_eval` instead |
+| OR050 | HIGH     | new model (`_name`) with no `ir.model.access` rule — only superuser can use it |
 
 ### Performance (N+1)
 | Rule  | Severity | Description |
@@ -134,6 +167,17 @@ field in JSON output) shows how many findings were filtered.
 | OR045 | MEDIUM   | Python package listed in `depends` (should be `external_dependencies`) |
 | OR046 | HIGH     | Module lists itself in `depends` (circular) |
 | OR047 | HIGH     | `__manifest__.py` missing or unparseable |
+
+### Deprecations (version-aware)
+Severity scales with the target series: HIGH once removed, INFO while still
+supported, MEDIUM when the version is unknown.
+
+| Rule  | Severity | Description |
+|-------|----------|-------------|
+| OR060 | scaled   | `@api.multi` / `@api.one` — removed in Odoo 13 |
+| OR061 | MEDIUM   | explicit `cr.commit()` in addon code — breaks transaction handling |
+| OR062 | scaled   | legacy API: `from openerp`, `osv.osv`, `_columns`, `fields.function` |
+| OR063 | scaled   | `self.pool` / `self.pool.get()` — old API, use `self.env` |
 
 > **Scan scope:** `__pycache__`, `.git`, `node_modules`, `static`, `migrations`, and `tests`
 > directories are skipped by both the AST checks and Bandit. Test code intentionally

@@ -450,3 +450,180 @@ class TestSuppressionIntegration:
         addon = _addon_with_models(tmp_path, "def f(self):\n    return eval('1')\n")
         result = scan_addon(addon, run_bandit_scan=False, disabled_rules={"OR026"})
         assert not any(f.rule_id == "OR026" for f in result.findings)
+
+
+# ── OR050: ir.model.access ──────────────────────────────────────────────────────
+
+def _model_addon(tmp_path, model_src, csv=None):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "__manifest__.py").write_text(
+        "{'name': 'm', 'version': '17.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+        encoding="utf-8",
+    )
+    (tmp_path / "models.py").write_text(model_src, encoding="utf-8")
+    if csv is not None:
+        (tmp_path / "security").mkdir(exist_ok=True)
+        (tmp_path / "security" / "ir.model.access.csv").write_text(csv, encoding="utf-8")
+    return tmp_path
+
+
+_MODEL = "from odoo import models\nclass M(models.Model):\n    _name = 'my.model'\n"
+
+
+class TestAccessChecker:
+    def test_model_without_access_is_flagged(self, tmp_path):
+        from odoo_review.checkers.access import check_access_rules
+        addon = _model_addon(tmp_path, _MODEL)
+        ids = {f.rule_id for f in check_access_rules(addon)}
+        assert "OR050" in ids
+
+    def test_model_with_access_csv_is_clean(self, tmp_path):
+        from odoo_review.checkers.access import check_access_rules
+        csv = ("id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink\n"
+               "access_my_model,my.model,model_my_model,base.group_user,1,1,1,1\n")
+        addon = _model_addon(tmp_path, _MODEL, csv=csv)
+        assert not list(check_access_rules(addon))
+
+    def test_substring_model_does_not_falsely_grant(self, tmp_path):
+        # Access for `my.model.line` must NOT satisfy `my.model`.
+        from odoo_review.checkers.access import check_access_rules
+        csv = "id,name,model_id:id\naccess_x,x,model_my_model_line\n"
+        addon = _model_addon(tmp_path, _MODEL, csv=csv)
+        assert any(f.rule_id == "OR050" for f in check_access_rules(addon))
+
+    def test_abstract_model_not_flagged(self, tmp_path):
+        from odoo_review.checkers.access import check_access_rules
+        addon = _model_addon(
+            tmp_path,
+            "from odoo import models\nclass A(models.AbstractModel):\n    _name = 'a.mixin'\n",
+        )
+        assert not list(check_access_rules(addon))
+
+
+# ── OR060-063: deprecation (version-aware) ──────────────────────────────────────
+
+def _dep(src, version=None):
+    from odoo_review.checkers.deprecation import DeprecationChecker
+    from odoo_review.models import ScanContext
+    tree = ast.parse(src)
+    ctx = ScanContext(odoo_version=version)
+    return list(DeprecationChecker().check_file(Path("m.py"), tree, src, ctx))
+
+
+class TestDeprecationChecker:
+    def test_api_multi_scales_with_version(self):
+        src = "import api\nclass C:\n    @api.multi\n    def f(self): pass\n"
+        hi = [f for f in _dep(src, 17) if f.rule_id == "OR060"]
+        lo = [f for f in _dep(src, 12) if f.rule_id == "OR060"]
+        un = [f for f in _dep(src, None) if f.rule_id == "OR060"]
+        assert hi and hi[0].severity.value == "HIGH"
+        assert lo and lo[0].severity.value == "INFO"
+        assert un and un[0].severity.value == "MEDIUM"
+
+    def test_cr_commit(self):
+        assert any(f.rule_id == "OR061" for f in _dep("def f(self):\n    self.env.cr.commit()\n"))
+
+    def test_legacy_openerp_import(self):
+        assert any(f.rule_id == "OR062" for f in _dep("from openerp import models\n"))
+
+    def test_legacy_osv_and_columns_and_function(self):
+        src = ("class C(osv.osv):\n"
+               "    _columns = {}\n"
+               "    x = fields.function(lambda s: 1)\n")
+        ids = [f.rule_id for f in _dep(src, 16)]
+        assert ids.count("OR062") >= 3
+
+    def test_self_pool(self):
+        assert any(f.rule_id == "OR063" for f in _dep("def f(self):\n    return self.pool.get('x')\n"))
+
+
+# ── Config: .odoo-review / pyproject richness ───────────────────────────────────
+
+class TestConfig:
+    def test_ini_parses_all_keys(self, tmp_path):
+        from odoo_review.config import load_config
+        from odoo_review.models import Severity
+        (tmp_path / ".odoo-review").write_text(
+            "[odoo-review]\n"
+            "target-version = 17\n"
+            "disable = OR025, OR044\n"
+            "select = OR001, OR026\n"
+            "severity = OR050:LOW, OR010:CRITICAL\n"
+            "exclude = legacy/*, scratch/*\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path)
+        assert cfg.target_version == 17
+        assert cfg.disable == {"OR025", "OR044"}
+        assert cfg.select == {"OR001", "OR026"}
+        assert cfg.severity == {"OR050": Severity.LOW, "OR010": Severity.CRITICAL}
+        assert cfg.exclude == ["legacy/*", "scratch/*"]
+
+    def test_pyproject_tool_section(self, tmp_path):
+        # tomllib is stdlib on 3.11+; skip cleanly on older without a backend.
+        try:
+            import tomllib  # noqa: F401
+        except ModuleNotFoundError:
+            pytest.skip("no TOML reader for pyproject config on this Python")
+        from odoo_review.config import load_config
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.odoo-review]\ndisable = [\"OR026\"]\ntarget-version = 18\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(tmp_path)
+        assert cfg.disable == {"OR026"} and cfg.target_version == 18
+
+    def test_config_target_version_feeds_scan(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        addon = _addon_with_models(tmp_path, "def f(self): pass\n")
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\ntarget-version = 18\n", encoding="utf-8")
+        result = scan_addon(addon, run_bandit_scan=False)
+        assert result.odoo_version == 18 and result.odoo_version_source == "config"
+
+    def test_select_is_allowlist(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        addon = _model_addon(tmp_path, _MODEL + "\ndef g(self):\n    return eval('1')\n")
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\nselect = OR026\n", encoding="utf-8")
+        result = scan_addon(addon, run_bandit_scan=False)
+        ids = {f.rule_id for f in result.findings}
+        assert ids == {"OR026"}  # OR050 and everything else dropped
+
+    def test_severity_override(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        addon = _model_addon(tmp_path, _MODEL)
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\nseverity = OR050:LOW\n", encoding="utf-8")
+        result = scan_addon(addon, run_bandit_scan=False)
+        or050 = [f for f in result.findings if f.rule_id == "OR050"]
+        assert or050 and or050[0].severity.value == "LOW"
+
+    def test_exclude_path(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'm', 'version': '17.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        (tmp_path / "scratch").mkdir()
+        (tmp_path / "scratch" / "junk.py").write_text("def f(self):\n    return eval('1')\n", encoding="utf-8")
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\nexclude = scratch/*\n", encoding="utf-8")
+        result = scan_addon(tmp_path, run_bandit_scan=False)
+        assert not any(f.rule_id == "OR026" for f in result.findings)
+
+
+# ── CLI path resolution ─────────────────────────────────────────────────────────
+
+class TestCliResolution:
+    def test_find_addon_root_from_file(self, tmp_path):
+        from odoo_review.cli import _find_addon_root
+        (tmp_path / "__manifest__.py").write_text("{}", encoding="utf-8")
+        sub = tmp_path / "models"
+        sub.mkdir()
+        f = sub / "m.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        assert _find_addon_root(f) == tmp_path
+
+    def test_find_addon_root_none_outside_addon(self, tmp_path):
+        from odoo_review.cli import _find_addon_root
+        f = tmp_path / "loose.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        assert _find_addon_root(f) is None

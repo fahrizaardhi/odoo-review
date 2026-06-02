@@ -1,0 +1,21 @@
+# Lets any Odoo addon repo use odoo-review as a pre-commit hook:
+#
+#   # .pre-commit-config.yaml in the consuming repo
+#   - repo: https://github.com/fahrizaardhi/odoo-review
+#     rev: v0.2.0
+#     hooks:
+#       - id: odoo-review
+#         # optional overrides:
+#         # args: [--no-bandit, --fail-on, MEDIUM]
+#
+# pre-commit passes the changed .py/.csv files; the CLI maps each to its
+# containing addon and scans it. Default --fail-on HIGH blocks the commit on
+# HIGH/CRITICAL findings (tune via `args`).
+- id: odoo-review
+  name: odoo-review (Odoo static analysis)
+  description: SQL injection, N+1, ORM, deprecation, manifest & ir.model.access checks for Odoo addons.
+  entry: odoo-review
+  language: python
+  files: '(\.py|\.csv)$'
+  args: [--fail-on, HIGH]
+  require_serial: true

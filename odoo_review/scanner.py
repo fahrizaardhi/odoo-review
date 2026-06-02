@@ -4,21 +4,21 @@ runs Bandit, and returns a unified ScanResult.
 """
 from __future__ import annotations
 import ast
+import fnmatch
 from pathlib import Path
 from typing import Optional
 
 from odoo_review.checkers import BaseChecker
+from odoo_review.config import ScanConfig, load_config
 from odoo_review.models import Category, Finding, ScanContext, ScanResult, Severity
 from odoo_review.bandit_runner import run_bandit
 from odoo_review.checkers.sql_injection import SQLInjectionChecker
 from odoo_review.checkers.n_plus_one import NPlusOneChecker
 from odoo_review.checkers.orm_best_practice import ORMBestPracticeChecker
+from odoo_review.checkers.deprecation import DeprecationChecker
 from odoo_review.checkers.manifest import check_manifest, detect_odoo_version
-from odoo_review.suppressions import (
-    is_suppressed,
-    load_config_disabled,
-    parse_inline_suppressions,
-)
+from odoo_review.checkers.access import check_access_rules
+from odoo_review.suppressions import is_suppressed, parse_inline_suppressions
 
 # Entry-point group third-party packages register custom checkers under.
 _PLUGIN_GROUP = "odoo_review.checkers"
@@ -27,6 +27,7 @@ _BUILTIN_CHECKERS: list[BaseChecker] = [
     SQLInjectionChecker(),
     NPlusOneChecker(),
     ORMBestPracticeChecker(),
+    DeprecationChecker(),
 ]
 
 
@@ -92,19 +93,24 @@ def scan_addon(
         addon's __manifest__.py version key; version-aware rules fall back to
         conservative behaviour if neither source yields a value.
     disabled_rules : set[str] | None
-        Rule ids to drop globally. Merged with any found in a `.odoo-review`
-        config file discovered by walking up from the addon directory.
+        Rule ids to drop globally. Merged with any disabled in the project's
+        `.odoo-review` / pyproject config discovered from the addon directory.
     """
     result = ScanResult(addon_path=str(addon_path))
     effective_skip = _SKIP_DIRS | (skip_dirs or set())
     checkers = get_python_checkers()
+    cfg = load_config(addon_path)
 
     manifest_file = addon_path / "__manifest__.py"
 
-    # Resolve the target version: explicit flag wins, else auto-detect.
+    # Resolve the target version: explicit flag > config > manifest auto-detect.
+    explicit_version = odoo_version if odoo_version is not None else cfg.target_version
     if odoo_version is not None:
         result.odoo_version = odoo_version
         result.odoo_version_source = "flag"
+    elif cfg.target_version is not None:
+        result.odoo_version = cfg.target_version
+        result.odoo_version_source = "config"
     elif manifest_file.exists():
         detected = detect_odoo_version(manifest_file)
         if detected is not None:
@@ -113,10 +119,10 @@ def scan_addon(
     context = ScanContext(odoo_version=result.odoo_version)
 
     # 1. Manifest checks. The series-mismatch part of OR042 is only meaningful
-    # against an explicit flag (auto-detection reads the same version string,
-    # so it would always match) — pass the flag value, not the resolved one.
+    # against an explicit version (flag or config) — auto-detection reads the
+    # same version string, so it would always match.
     if manifest_file.exists():
-        for finding in check_manifest(manifest_file, target_version=odoo_version):
+        for finding in check_manifest(manifest_file, target_version=explicit_version):
             result.add(finding)
     else:
         result.add(Finding(
@@ -132,10 +138,13 @@ def scan_addon(
     for py_file in sorted(addon_path.rglob("*.py")):
         # Skip unwanted dirs — compare only the path *inside* the addon so a
         # skip-named directory in the absolute prefix doesn't hide everything.
-        rel_parts = py_file.relative_to(addon_path).parts
-        if any(part in effective_skip for part in rel_parts):
+        rel = py_file.relative_to(addon_path)
+        if any(part in effective_skip for part in rel.parts):
             continue
         if py_file.name in _SKIP_FILES:
+            continue
+        # Config-driven path excludes (glob, relative to the addon root).
+        if any(fnmatch.fnmatch(rel.as_posix(), pat) for pat in cfg.exclude):
             continue
 
         result.scanned_files += 1
@@ -156,21 +165,29 @@ def scan_addon(
             for finding in checker.check_file(py_file, tree, source, context):
                 result.add(finding)
 
-    # 3. Bandit scan (whole addon at once), excluding the same dirs.
+    # 3. Addon-level security check: models without an ir.model.access rule.
+    for finding in check_access_rules(addon_path):
+        result.add(finding)
+
+    # 4. Bandit scan (whole addon at once), excluding the same dirs.
     if run_bandit_scan:
         for finding in run_bandit(addon_path, exclude_dirs=effective_skip):
             result.add(finding)
 
-    # 4. Suppression pass: drop findings disabled via `.odoo-review` config or
-    # an inline `# noqa` on the offending line. Applies to all findings above.
-    disabled = set(disabled_rules or set()) | load_config_disabled(addon_path)
-    _apply_suppressions(result, disabled)
+    # 5. Finalize: apply select/disable filtering, inline `# noqa`, and per-rule
+    # severity overrides. Applies uniformly to AST, ACL, manifest and Bandit.
+    disabled = set(disabled_rules or set()) | cfg.disable
+    _finalize(result, disabled, cfg.select, cfg.severity)
 
     return result
 
 
-# Cache of per-file inline `# noqa` maps so each source file is tokenized once.
-def _apply_suppressions(result: ScanResult, disabled: set[str]) -> None:
+def _finalize(result, disabled, select, severity):
+    """Drop disabled/unselected/inline-suppressed findings, then remap severity.
+
+    `select` (when not None) is an allow-list: only those rule ids survive.
+    Per-file inline `# noqa` maps are cached so each source file is read once.
+    """
     inline_cache: dict[str, dict] = {}
 
     def inline_for(filepath: str) -> dict:
@@ -184,9 +201,14 @@ def _apply_suppressions(result: ScanResult, disabled: set[str]) -> None:
 
     kept: list[Finding] = []
     for f in result.findings:
+        if select is not None and f.rule_id not in select:
+            result.suppressed += 1
+            continue
         if is_suppressed(f.rule_id, f.line, inline_for(f.filepath), disabled):
             result.suppressed += 1
             continue
+        if f.rule_id in severity:
+            f.severity = severity[f.rule_id]
         kept.append(f)
     result.findings = kept
 
