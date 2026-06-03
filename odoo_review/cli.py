@@ -18,6 +18,7 @@ from odoo_review.scanner import scan_addon, scan_directory
 from odoo_review.reporters.console import print_result, print_multi_results
 from odoo_review.reporters.json_reporter import to_json
 from odoo_review.models import Severity, SEVERITY_ORDER
+from odoo_review.versions import UnsupportedVersionError, validate_target_version
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -76,6 +77,15 @@ def main() -> int:
     parser = build_parser()
     args   = parser.parse_args()
 
+    # Fail fast on a bad --odoo-version before doing any scanning work. A bad
+    # config `target-version` is caught later (it surfaces per-addon during the
+    # scan) and handled by the same UnsupportedVersionError guard below.
+    try:
+        validate_target_version(args.odoo_version, source="--odoo-version")
+    except UnsupportedVersionError as exc:
+        print(f"❌  {exc}", file=sys.stderr)
+        return 2
+
     run_bandit = not args.no_bandit
     use_color  = not args.no_color and sys.stdout.isatty()
 
@@ -92,26 +102,32 @@ def main() -> int:
             seen.add(p)
             addon_targets.append(p)
 
-    for raw in args.paths:
-        target = Path(raw).resolve()
-        if not target.exists():
-            print(f"❌  Path not found: {target}", file=sys.stderr)
-            missing = True
-            continue
-        if target.is_file():
-            root = _find_addon_root(target)
-            if root is not None:
-                queue_addon(root)
-            # A file outside any addon is silently ignored (e.g. repo-level files).
-        elif args.all or not (target / "__manifest__.py").exists():
-            dir_results.extend(scan_directory(target, run_bandit_scan=run_bandit, odoo_version=args.odoo_version))
-        else:
-            queue_addon(target)
+    try:
+        for raw in args.paths:
+            target = Path(raw).resolve()
+            if not target.exists():
+                print(f"❌  Path not found: {target}", file=sys.stderr)
+                missing = True
+                continue
+            if target.is_file():
+                root = _find_addon_root(target)
+                if root is not None:
+                    queue_addon(root)
+                # A file outside any addon is silently ignored (e.g. repo-level files).
+            elif args.all or not (target / "__manifest__.py").exists():
+                dir_results.extend(scan_directory(target, run_bandit_scan=run_bandit, odoo_version=args.odoo_version))
+            else:
+                queue_addon(target)
 
-    results = dir_results + [
-        scan_addon(a, run_bandit_scan=run_bandit, odoo_version=args.odoo_version)
-        for a in addon_targets
-    ]
+        results = dir_results + [
+            scan_addon(a, run_bandit_scan=run_bandit, odoo_version=args.odoo_version)
+            for a in addon_targets
+        ]
+    except UnsupportedVersionError as exc:
+        # Raised when a project's `.odoo-review` / pyproject `target-version` is
+        # outside the supported range.
+        print(f"❌  {exc}", file=sys.stderr)
+        return 2
 
     if not results:
         if missing:

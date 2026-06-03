@@ -1,15 +1,17 @@
 """
-OR060 – OR063: deprecated / removed Odoo API usage (version-aware).
+OR060 – OR064: deprecated / removed Odoo API usage (version-aware).
 
   OR060 – @api.multi / @api.one decorators (removed in Odoo 13)
   OR061 – cr.commit() inside addon code (breaks the transaction)
   OR062 – pre-v10 legacy API: `from openerp`, osv.osv base, _columns,
           fields.function
   OR063 – self.pool / self.pool.get() (old API, replaced by self.env)
+  OR064 – name_get() override (deprecated in Odoo 17 → _compute_display_name)
 
-Severity scales with the target series (`context.odoo_version`): once a feature
-is actually removed it becomes HIGH (it will break), before that it is an
-advisory, and with an unknown version we stay at MEDIUM.
+Severity scales with the target series (`context.odoo_version`), via the shared
+helpers in :mod:`odoo_review.versions`. Legacy-API rules (OR060/062/063) are at
+least advisory even on old versions; OR064 is silent before its deprecation
+milestone because name_get is the correct idiom until then.
 """
 from __future__ import annotations
 import ast
@@ -18,15 +20,16 @@ from typing import Generator, Optional
 
 from odoo_review.checkers import BaseChecker
 from odoo_review.models import Category, Finding, ScanContext, Severity
+from odoo_review.versions import (
+    API_MULTI_REMOVED_IN,
+    LEGACY_API_RENAMED_IN,
+    NAME_GET_DEPRECATED_IN,
+    SELF_POOL_REMOVED_IN,
+    severity_for_deprecation,
+    severity_for_legacy,
+)
 
 _CURSOR_NAMES = {"cr", "_cr", "cursor"}
-
-
-def _scaled(version: Optional[int], removed_in: int) -> Severity:
-    """HIGH once removed, INFO while still supported, MEDIUM if version unknown."""
-    if version is None:
-        return Severity.MEDIUM
-    return Severity.HIGH if version >= removed_in else Severity.INFO
 
 
 class DeprecationChecker(BaseChecker):
@@ -50,12 +53,25 @@ class DeprecationChecker(BaseChecker):
                         if isinstance(dec.value, ast.Name) and dec.value.id == "api":
                             yield Finding(
                                 rule_id="OR060",
-                                severity=_scaled(version, 13),
+                                severity=severity_for_legacy(version, API_MULTI_REMOVED_IN),
                                 category=Category.MAINTAINABILITY,
                                 message=f"[OR060] @api.{dec.attr} was removed in Odoo 13 — methods now operate on recordsets directly.",
                                 filepath=fp, line=dec.lineno, snippet=snippet(dec.lineno),
                                 suggestion="Drop the decorator; iterate `for rec in self:` where you need a single record.",
                             )
+
+                # OR064: name_get() override (deprecated in v17 → _compute_display_name)
+                if node.name == "name_get":
+                    sev = severity_for_deprecation(version, NAME_GET_DEPRECATED_IN)
+                    if sev is not None:
+                        yield Finding(
+                            rule_id="OR064",
+                            severity=sev,
+                            category=Category.MAINTAINABILITY,
+                            message="[OR064] name_get() was deprecated in Odoo 17 — override `_compute_display_name` and a computed `display_name` field instead.",
+                            filepath=fp, line=node.lineno, snippet=snippet(node.lineno),
+                            suggestion="Replace `def name_get(self)` with `display_name = fields.Char(compute='_compute_display_name')` and a `_compute_display_name` method.",
+                        )
 
             # OR061: cursor .commit() inside addon code
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "commit":
@@ -108,7 +124,7 @@ class DeprecationChecker(BaseChecker):
                     and isinstance(node.value, ast.Name) and node.value.id == "self"):
                 yield Finding(
                     rule_id="OR063",
-                    severity=_scaled(version, 10),
+                    severity=severity_for_legacy(version, SELF_POOL_REMOVED_IN),
                     category=Category.MAINTAINABILITY,
                     message="[OR063] self.pool is the old API (pre-v8) — use self.env['model'] instead.",
                     filepath=fp, line=node.lineno, snippet=snippet(node.lineno),
@@ -118,7 +134,7 @@ class DeprecationChecker(BaseChecker):
     def _legacy(self, version, fp, lineno, snippet, what: str) -> Finding:
         return Finding(
             rule_id="OR062",
-            severity=_scaled(version, 10),
+            severity=severity_for_legacy(version, LEGACY_API_RENAMED_IN),
             category=Category.MAINTAINABILITY,
             message=f"[OR062] Legacy Odoo API: {what}.",
             filepath=fp, line=lineno, snippet=snippet,

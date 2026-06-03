@@ -28,6 +28,13 @@ from pathlib import Path
 from typing import Generator, List, Optional, Tuple
 
 from odoo_review.models import Category, Finding, ScanContext, Severity
+from odoo_review.versions import (
+    ATTRS_DEPRECATED_IN,
+    ATTRS_REMOVED_IN,
+    LIST_RENAMED_IN,
+    TRAW_REMOVED_IN,
+    severity_for_deprecation,
+)
 
 # Try lxml first (precise line numbers); degrade to the stdlib parser otherwise.
 try:  # pragma: no cover - import path depends on the environment
@@ -42,11 +49,7 @@ _SKIP_DIRS = {"__pycache__", ".git", "node_modules", "static", "migrations", "te
 # Definition elements that carry an ``id`` and must be unique within a module.
 _ID_TAGS = {"record", "template", "menuitem", "act_window", "report"}
 
-# Version milestones for the view-layer deprecations.
-_ATTRS_REMOVED_IN = 18   # attrs/states removed
-_ATTRS_DEPRECATED_IN = 17
-_LIST_RENAMED_IN = 17    # <tree> -> <list>
-_TRAW_REMOVED_IN = 17    # t-raw -> t-out
+# Version milestones live in odoo_review.versions (single source of truth).
 
 
 # ── parsing helpers ────────────────────────────────────────────────────────────
@@ -100,23 +103,6 @@ def _parse_error_types() -> tuple:
     return (_ET.ParseError, OSError)  # pragma: no cover
 
 
-# ── severity scaling ─────────────────────────────────────────────────────────
-
-def _attrs_severity(version: Optional[int]) -> Optional[Severity]:
-    """attrs/states: HIGH once removed (>=18), INFO while merely deprecated (17).
-
-    Returns None — i.e. *do not flag* — for older or unknown versions, where
-    ``attrs`` is still the correct idiom and flagging it would only be noise.
-    """
-    if version is None:
-        return None
-    if version >= _ATTRS_REMOVED_IN:
-        return Severity.HIGH
-    if version >= _ATTRS_DEPRECATED_IN:
-        return Severity.INFO
-    return None
-
-
 # ── the check ──────────────────────────────────────────────────────────────────
 
 def check_xml(
@@ -155,9 +141,9 @@ def check_xml(
             # OR070 / OR071: attrs= / states= attributes
             for attr_name, rule in (("attrs", "OR070"), ("states", "OR071")):
                 if attr_name in el.attrib:
-                    sev = _attrs_severity(version)
+                    sev = severity_for_deprecation(version, ATTRS_DEPRECATED_IN, ATTRS_REMOVED_IN)
                     if sev is not None:
-                        verb = "removed in Odoo 18" if version and version >= _ATTRS_REMOVED_IN else "deprecated in Odoo 17"
+                        verb = "removed in Odoo 18" if version and version >= ATTRS_REMOVED_IN else "deprecated in Odoo 17"
                         yield Finding(
                             rule_id=rule,
                             severity=sev,
@@ -176,8 +162,8 @@ def check_xml(
             # OR073: t-raw QWeb directive (any element may carry it)
             traw = "t-raw" in el.attrib or any(_localname(k) == "t-raw" for k in el.attrib)
             if traw:
-                sev = Severity.HIGH if (version and version >= _TRAW_REMOVED_IN) else Severity.MEDIUM
-                removed = " and was removed in Odoo 17" if (version and version >= _TRAW_REMOVED_IN) else ""
+                sev = Severity.HIGH if (version and version >= TRAW_REMOVED_IN) else Severity.MEDIUM
+                removed = " and was removed in Odoo 17" if (version and version >= TRAW_REMOVED_IN) else ""
                 yield Finding(
                     rule_id="OR073",
                     severity=sev,
@@ -190,7 +176,7 @@ def check_xml(
                 )
 
             # OR072: <tree> renamed to <list> in v17
-            if tag == "tree" and version is not None and version >= _LIST_RENAMED_IN:
+            if tag == "tree" and version is not None and version >= LIST_RENAMED_IN:
                 yield Finding(
                     rule_id="OR072",
                     severity=Severity.INFO,

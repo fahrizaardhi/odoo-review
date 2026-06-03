@@ -536,6 +536,66 @@ class TestDeprecationChecker:
     def test_self_pool(self):
         assert any(f.rule_id == "OR063" for f in _dep("def f(self):\n    return self.pool.get('x')\n"))
 
+    def test_name_get_deprecated_v17_plus(self):
+        # name_get is the correct idiom before v17, so it must stay silent there
+        # and only fire (as INFO) from v17 onward.
+        src = "class C:\n    def name_get(self):\n        return []\n"
+        assert [f for f in _dep(src, 17) if f.rule_id == "OR064"][0].severity.value == "INFO"
+        assert not [f for f in _dep(src, 16) if f.rule_id == "OR064"]
+        assert not [f for f in _dep(src, None) if f.rule_id == "OR064"]
+
+
+# ── Supported-version validation (flag / config raise; manifest is lenient) ─────
+
+class TestVersionValidation:
+    def test_supported_range_passes(self):
+        from odoo_review.versions import validate_target_version
+        for v in (12, 15, 18, None):
+            validate_target_version(v)  # must not raise
+
+    def test_above_latest_raises(self):
+        from odoo_review.versions import UnsupportedVersionError, validate_target_version
+        with pytest.raises(UnsupportedVersionError):
+            validate_target_version(25)
+
+    def test_below_floor_raises(self):
+        from odoo_review.versions import UnsupportedVersionError, validate_target_version
+        with pytest.raises(UnsupportedVersionError):
+            validate_target_version(11)
+
+    def test_scan_addon_raises_on_unsupported_flag(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        from odoo_review.versions import UnsupportedVersionError
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'x', 'version': '18.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        with pytest.raises(UnsupportedVersionError):
+            scan_addon(tmp_path, run_bandit_scan=False, odoo_version=99)
+
+    def test_scan_addon_raises_on_unsupported_config(self, tmp_path):
+        from odoo_review.scanner import scan_addon
+        from odoo_review.versions import UnsupportedVersionError
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'x', 'version': '18.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        (tmp_path / ".odoo-review").write_text("[odoo-review]\ntarget-version = 20\n", encoding="utf-8")
+        with pytest.raises(UnsupportedVersionError):
+            scan_addon(tmp_path, run_bandit_scan=False)
+
+    def test_manifest_autodetect_is_lenient(self, tmp_path):
+        # An out-of-range version detected from the manifest must NOT raise — it
+        # degrades to "unknown" rather than crashing a directory scan.
+        from odoo_review.scanner import scan_addon
+        (tmp_path / "__manifest__.py").write_text(
+            "{'name': 'x', 'version': '11.0.1.0.0', 'depends': ['base'], 'license': 'LGPL-3'}",
+            encoding="utf-8",
+        )
+        result = scan_addon(tmp_path, run_bandit_scan=False)  # must not raise
+        assert result.odoo_version == 11
+        assert result.odoo_version_source == "manifest"
+
 
 # ── Config: .odoo-review / pyproject richness ───────────────────────────────────
 

@@ -47,8 +47,23 @@ odoo-review ./my_addon --fail-on HIGH
 Some rules depend on the target Odoo series. The version is resolved as:
 
 1. `--odoo-version N` if passed (explicit override), else
-2. auto-detected from the addon's `__manifest__.py` `version` key, else
-3. unknown — version-aware rules fall back to conservative defaults.
+2. `target-version` from `.odoo-review` / `pyproject.toml`, else
+3. auto-detected from the addon's `__manifest__.py` `version` key, else
+4. unknown — version-aware rules fall back to conservative defaults.
+
+odoo-review currently supports **Odoo 12–18** (latest: 18). An *explicit*
+version — the `--odoo-version` flag or a `target-version` config key — outside
+that range is rejected with a clear error (exit code 2):
+
+```
+❌  Odoo version 25 (from --odoo-version) is not supported. Supported: 12–18 (latest 18). …
+```
+
+Auto-detected manifest versions stay lenient: an out-of-range value simply
+degrades to "unknown" so a directory scan never crashes on one odd addon.
+Supporting a new release (19, 20, …) is a one-line change in
+`odoo_review/versions.py` — bump `LATEST_SUPPORTED` and add its milestone
+constants.
 
 When the version is known it sharpens results, e.g.:
 
@@ -56,6 +71,8 @@ When the version is known it sharpens results, e.g.:
   downgraded to `MEDIUM` (legacy-but-valid) on v12 and earlier.
 - **OR042** — with an explicit `--odoo-version`, a manifest whose version prefix
   does not match the target series is flagged as a mismatch.
+- **OR064** — `name_get()` override is `INFO` on v17+ (deprecated in favour of
+  `_compute_display_name`) and silent on older versions where it is still correct.
 
 ## Suppressing findings
 
@@ -185,6 +202,7 @@ supported, MEDIUM when the version is unknown.
 | OR061 | MEDIUM   | explicit `cr.commit()` in addon code — breaks transaction handling |
 | OR062 | scaled   | legacy API: `from openerp`, `osv.osv`, `_columns`, `fields.function` |
 | OR063 | scaled   | `self.pool` / `self.pool.get()` — old API, use `self.env` |
+| OR064 | scaled   | `name_get()` override — deprecated in Odoo 17, use `_compute_display_name` (silent before v17) |
 
 ### XML / View layer
 Every `*.xml` file is parsed (views, QWeb templates, data, actions). The

@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project uses
 [semantic versioning](https://semver.org/).
 
+## [0.4.0]
+
+### Added
+- **Central version registry** (`odoo_review/versions.py`) — single source of
+  truth for the supported Odoo range and every feature/API deprecation
+  milestone. Supporting a new release (19, 20, …) is now a one-line change:
+  bump `LATEST_SUPPORTED` and add the relevant milestone constants. The
+  `deprecation` and `xml_view` checkers now pull their milestones from here
+  instead of hard-coding them.
+- **Supported-version validation** — an *explicit* target version (the
+  `--odoo-version` flag or a `target-version` config key) outside the supported
+  range (**12–18**, latest 18) is now rejected with a clear error and exit
+  code 2. Auto-detected manifest versions stay lenient (they degrade to
+  "unknown") so a directory scan never crashes on one out-of-range addon.
+- **OR064** — `name_get()` override deprecated in Odoo 17 (use
+  `_compute_display_name`). Version-aware: `INFO` on v17+, silent on older
+  versions where `name_get` is still the correct idiom.
+
 ## [0.3.0]
 
 ### Added

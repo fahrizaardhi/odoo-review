@@ -20,6 +20,7 @@ from odoo_review.checkers.manifest import check_manifest, detect_odoo_version
 from odoo_review.checkers.access import check_access_rules
 from odoo_review.checkers.xml_view import check_xml, iter_xml_files
 from odoo_review.suppressions import is_suppressed, parse_inline_suppressions
+from odoo_review.versions import validate_target_version
 
 # Entry-point group third-party packages register custom checkers under.
 _PLUGIN_GROUP = "odoo_review.checkers"
@@ -105,11 +106,15 @@ def scan_addon(
     manifest_file = addon_path / "__manifest__.py"
 
     # Resolve the target version: explicit flag > config > manifest auto-detect.
+    # An explicit version (flag or config) is validated and raises on an
+    # unsupported value; an auto-detected manifest version stays lenient.
     explicit_version = odoo_version if odoo_version is not None else cfg.target_version
     if odoo_version is not None:
+        validate_target_version(odoo_version, source="--odoo-version")
         result.odoo_version = odoo_version
         result.odoo_version_source = "flag"
     elif cfg.target_version is not None:
+        validate_target_version(cfg.target_version, source=cfg.source or "config target-version")
         result.odoo_version = cfg.target_version
         result.odoo_version_source = "config"
     elif manifest_file.exists():
